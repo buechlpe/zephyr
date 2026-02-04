@@ -94,6 +94,11 @@ struct stream {
 
 	int (*stream_start)(const struct device *dev, enum i2s_dir dir);
 	void (*queue_drop)(const struct device *dev);
+
+	/* Event callback support */
+	i2s_event_callback_t event_callback;
+	void *user_data;
+	const struct device *dev;
 };
 
 struct i2s_stm32_sai_data {
@@ -118,6 +123,18 @@ void HAL_SAI_RxCpltCallback(SAI_HandleTypeDef *hsai)
 	struct i2s_stm32_sai_data *dev_data = CONTAINER_OF(hsai, struct i2s_stm32_sai_data, hsai);
 	struct stream *stream = &dev_data->stream;
 	int ret;
+
+	/* Call user event callback if registered */
+	if (stream->event_callback && stream->dev) {
+		struct i2s_evt evt = {
+			.type = I2S_EVT_RX_COMPLETE,
+			.dir = I2S_DIR_RX,
+			.mem_block = stream->mem_block,
+			.size = stream->mem_block_len,
+			.user_data = stream->user_data,
+		};
+		stream->event_callback(stream->dev, &evt);
+	}
 
 	/* Exit the callback, Stream is stopped */
 	if (stream->state == I2S_STATE_ERROR) {
@@ -176,6 +193,18 @@ void HAL_SAI_TxCpltCallback(SAI_HandleTypeDef *hsai)
 	void *mem_block_tmp = stream->mem_block;
 	struct queue_item item;
 	int ret;
+
+	/* Call user event callback if registered */
+	if (stream->event_callback && stream->dev) {
+		struct i2s_evt evt = {
+			.type = I2S_EVT_TX_COMPLETE,
+			.dir = I2S_DIR_TX,
+			.mem_block = stream->mem_block,
+			.size = stream->mem_block_len,
+			.user_data = stream->user_data,
+		};
+		stream->event_callback(stream->dev, &evt);
+	}
 
 	if (stream->state == I2S_STATE_ERROR) {
 		LOG_ERR("TX bad status: %d, Stopping...", stream->state);
@@ -870,11 +899,39 @@ static int i2s_stm32_sai_trigger(const struct device *dev, enum i2s_dir dir,
 	return 0;
 }
 
+static int i2s_stm32_sai_register_callback(const struct device *dev,
+                                           enum i2s_dir dir,
+                                           i2s_event_callback_t cb,
+                                           void *user_data)
+{
+	struct i2s_stm32_sai_data *dev_data = dev->data;
+	struct stream *stream = &dev_data->stream;
+	unsigned int key;
+
+	if (dir != I2S_DIR_TX && dir != I2S_DIR_RX) {
+		LOG_ERR("Invalid direction for callback registration");
+		return -EINVAL;
+	}
+
+	key = irq_lock();
+	stream->event_callback = cb;
+	stream->user_data = user_data;
+	stream->dev = dev;
+	irq_unlock(key);
+
+	LOG_DBG("I2S event callback %s for %s",
+	        cb ? "registered" : "unregistered",
+	        dir == I2S_DIR_TX ? "TX" : "RX");
+
+	return 0;
+}
+
 static DEVICE_API(i2s, i2s_stm32_driver_api) = {
 	.configure = i2s_stm32_sai_configure,
 	.trigger = i2s_stm32_sai_trigger,
 	.write = i2s_stm32_sai_write,
 	.read = i2s_stm32_sai_read,
+	.register_callback = i2s_stm32_sai_register_callback,
 };
 
 #define SAI_DMA_CHANNEL_INIT(index, dir, src, dest)                                                \

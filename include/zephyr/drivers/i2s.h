@@ -278,6 +278,47 @@ enum i2s_trigger_cmd {
 	I2S_TRIGGER_PREPARE,
 };
 
+/**
+ * @brief I2S event types
+ */
+enum i2s_evt_type {
+	/** TX buffer complete - data has been fully transmitted */
+	I2S_EVT_TX_COMPLETE,
+	/** RX buffer complete - data has been fully received */
+	I2S_EVT_RX_COMPLETE,
+	/** TX buffer underrun */
+	I2S_EVT_TX_UNDERRUN,
+	/** RX buffer overrun */
+	I2S_EVT_RX_OVERRUN,
+	/** Error occurred */
+	I2S_EVT_ERROR,
+};
+
+/**
+ * @brief I2S event callback structure
+ */
+struct i2s_evt {
+	/** Event type */
+	enum i2s_evt_type type;
+	/** Stream direction where event occurred */
+	enum i2s_dir dir;
+	/** Pointer to the memory block associated with this event (if applicable) */
+	void *mem_block;
+	/** Size of the memory block */
+	size_t size;
+	/** User data pointer */
+	void *user_data;
+};
+
+/**
+ * @brief I2S event callback function signature
+ *
+ * @param dev Pointer to the device structure
+ * @param evt Pointer to event structure
+ */
+typedef void (*i2s_event_callback_t)(const struct device *dev,
+                                      const struct i2s_evt *evt);
+
 /** @struct i2s_config
  * @brief Interface configuration options.
  *
@@ -327,8 +368,8 @@ __subsystem struct i2s_driver_api {
 	int (*read)(const struct device *dev, void **mem_block, size_t *size);
 	int (*write)(const struct device *dev, void *mem_block, size_t size);
 	int (*trigger)(const struct device *dev, enum i2s_dir dir,
-		       enum i2s_trigger_cmd cmd);
-};
+		       enum i2s_trigger_cmd cmd);	int (*register_callback)(const struct device *dev, enum i2s_dir dir,
+		                 i2s_event_callback_t cb, void *user_data);};
 /**
  * @endcond
  */
@@ -535,6 +576,43 @@ static inline int z_impl_i2s_trigger(const struct device *dev,
 		(const struct i2s_driver_api *)dev->api;
 
 	return api->trigger(dev, dir, cmd);
+}
+
+/**
+ * @brief Register an event callback function
+ *
+ * This function allows the application to register a callback that will be
+ * invoked when specific I2S events occur (e.g., TX/RX complete, errors).
+ * The callback is executed from interrupt context, so it should be kept short
+ * and avoid blocking operations.
+ *
+ * @param dev Pointer to the device structure for the driver instance
+ * @param dir Stream direction: RX, TX, or both
+ * @param cb Callback function pointer (NULL to unregister)
+ * @param user_data User data pointer that will be passed to the callback
+ *
+ * @retval 0 If successful
+ * @retval -ENOTSUP If callbacks are not supported by this driver
+ * @retval -EINVAL Invalid argument
+ */
+__syscall int i2s_register_callback(const struct device *dev,
+                                    enum i2s_dir dir,
+                                    i2s_event_callback_t cb,
+                                    void *user_data);
+
+static inline int z_impl_i2s_register_callback(const struct device *dev,
+					       enum i2s_dir dir,
+					       i2s_event_callback_t cb,
+					       void *user_data)
+{
+	const struct i2s_driver_api *api =
+		(const struct i2s_driver_api *)dev->api;
+
+	if (api->register_callback == NULL) {
+		return -ENOTSUP;
+	}
+
+	return api->register_callback(dev, dir, cb, user_data);
 }
 
 /**
