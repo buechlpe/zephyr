@@ -102,6 +102,11 @@ struct stream {
 
 	int (*stream_start)(const struct device *dev, enum i2s_dir dir);
 	void (*queue_drop)(const struct device *dev);
+
+	/* Event callback support */
+	i2s_event_callback_t event_callback;
+	void *user_data;
+	const struct device *dev;
 };
 
 struct stm32_sai_sub_data {
@@ -133,6 +138,18 @@ void HAL_SAI_RxCpltCallback(SAI_HandleTypeDef *hsai)
 	struct stm32_sai_sub_data *sub_data = CONTAINER_OF(hsai, struct stm32_sai_sub_data, hsai);
 	struct stream *stream = &sub_data->stream;
 	int ret;
+
+	/* Call user event callback if registered */
+	if (stream->event_callback && stream->dev) {
+		struct i2s_evt evt = {
+			.type = I2S_EVT_RX_COMPLETE,
+			.dir = I2S_DIR_RX,
+			.mem_block = stream->mem_block,
+			.size = stream->mem_block_len,
+			.user_data = stream->user_data,
+		};
+		stream->event_callback(stream->dev, &evt);
+	}
 
 	/* Exit the callback, Stream is stopped */
 	if (stream->state == I2S_STATE_ERROR) {
@@ -191,6 +208,18 @@ void HAL_SAI_TxCpltCallback(SAI_HandleTypeDef *hsai)
 	void *mem_block_tmp = stream->mem_block;
 	struct queue_item item;
 	int ret;
+
+	/* Call user event callback if registered */
+	if (stream->event_callback && stream->dev) {
+		struct i2s_evt evt = {
+			.type = I2S_EVT_TX_COMPLETE,
+			.dir = I2S_DIR_TX,
+			.mem_block = stream->mem_block,
+			.size = stream->mem_block_len,
+			.user_data = stream->user_data,
+		};
+		stream->event_callback(stream->dev, &evt);
+	}
 
 	if (stream->state == I2S_STATE_ERROR) {
 		LOG_ERR("TX bad status: %d, Stopping...", stream->state);
@@ -981,6 +1010,35 @@ static int sai_init(const struct device *dev)
 	return 0;
 }
 
+static int stm32_sai_sub_register_callback(const struct device *dev,
+					   enum i2s_dir dir,
+					   i2s_event_callback_t cb,
+					   void *user_data)
+{
+	const struct stm32_sai_sub_cfg *const sub_cfg = dev->config;
+	struct stm32_sai_sub_data *sub_data = dev->data;
+	struct stream *stream = &sub_data->stream;
+	unsigned int key;
+
+	if (sub_cfg->dir != dir) {
+		LOG_WRN("Direction mismatch: requested %d, sub-block configured as %d", dir,
+			sub_cfg->dir);
+		return -EINVAL;
+	}
+
+	key = irq_lock();
+	stream->event_callback = cb;
+	stream->user_data = user_data;
+	stream->dev = dev;
+	irq_unlock(key);
+
+	LOG_DBG("I2S event callback %s for %s",
+		cb ? "registered" : "unregistered",
+		dir == I2S_DIR_TX ? "TX" : "RX");
+
+	return 0;
+}
+
 static const struct i2s_config *stm32_sai_sub_conf_get(const struct device *dev, enum i2s_dir dir)
 {
 	const struct stm32_sai_sub_cfg *const sub_cfg = dev->config;
@@ -1006,6 +1064,7 @@ static DEVICE_API(i2s, i2s_stm32_sai_api) = {
 	.write = stm32_sai_sub_write,
 	.read = stm32_sai_sub_read,
 	.config_get = stm32_sai_sub_conf_get,
+	.register_callback = stm32_sai_sub_register_callback,
 };
 
 #define SAI_FIFO_THRESHOLD(node) sai_fifo_threshold[DT_ENUM_IDX(node, fifo_threshold)]
